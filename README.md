@@ -1,1 +1,2 @@
-# SC2006-Project
+# 2006-SCE1-N2
+As there's a storage limit, kindly upload all deliverables format in .pdf and .jpeg format.

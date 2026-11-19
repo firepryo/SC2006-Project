@@ -1,0 +1,264 @@
+// DATA-01 Data Schema v0.2, generated from DATA-01-Data-Schema.md.
+// The Markdown document is the source of truth; keep this file in step with it.
+
+Project school_comparison_app {
+  database_type: 'PostgreSQL'
+  Note: 'SC2006 School Comparison & Shortlisting App. DATA-01 v0.2. Extensions: citext, postgis.'
+}
+
+// Enums
+Enum education_level {
+  Primary
+  Secondary
+  JuniorCollege
+}
+
+Enum school_type {
+  Primary
+  Secondary
+  JuniorCollege
+  MixedLevels
+}
+
+Enum cca_category {
+  Sports
+  PerformingArts
+  UniformedGroup
+  ClubSociety
+}
+
+Enum application_status {
+  Draft
+  Submitted
+  UnderReview
+  Offered
+  Rejected
+  Accepted
+}
+
+Enum sync_status {
+  Success
+  Failed
+  Partial
+}
+
+// Account and profile
+Table user_account {
+  user_id uuid [pk, default: `gen_random_uuid()`]
+  name varchar(100) [not null]
+  email citext [not null, unique, note: 'FR 1.4']
+  password_hash text [not null]
+  failed_login_count smallint [not null, default: 0, note: 'CHECK >= 0; NFR 3.5.1']
+  locked_until timestamptz [note: 'NFR 3.5.1']
+  preferred_postal_code char(6)
+  home_location "geography(Point, 4326)" [note: 'geocoded from postal code']
+  notification_opt_in boolean [not null, default: true, note: 'FR 11.2']
+  created_at timestamptz [not null, default: `now()`]
+}
+
+Table student_profile {
+  student_id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  name varchar(100)
+  current_level education_level [not null, note: 'FR 3.4']
+  current_year smallint [not null, note: 'CHECK 1-6']
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    user_id
+  }
+}
+
+Table student_preferred_subject {
+  student_id uuid
+  subject_id uuid
+
+  indexes {
+    (student_id, subject_id) [pk]
+  }
+}
+
+Table student_preferred_cca {
+  student_id uuid
+  cca_id uuid
+
+  indexes {
+    (student_id, cca_id) [pk]
+  }
+}
+
+// School catalogue (synced from data.gov.sg, see DATA-01 §3.8)
+Table school {
+  school_id uuid [pk, default: `gen_random_uuid()`]
+  name varchar(150) [not null, unique, note: 'sync upsert key (ADR-001)']
+  type school_type [not null, note: 'mapped from mainlevel_code (ADR-002)']
+  main_level varchar(50) [not null, note: 'raw mainlevel_code']
+  address text [not null]
+  postal_code char(6) [note: 'CHECK ~ ^[0-9]{6}$; left-padded to 6 digits']
+  location "geography(Point, 4326)" [note: 'geocoded via OneMap (ADR-003); NULL if lookup failed']
+  zone varchar(10) [note: 'NORTH, SOUTH, EAST, WEST']
+  planning_area varchar(50)
+  funding_type varchar(50)
+  gender_type varchar(20)
+  session_type varchar(20)
+  website text
+  telephone varchar(20)
+  email varchar(254)
+  mrt_desc text
+  bus_desc text
+  description text
+  is_active boolean [not null, default: true, note: 'false when missing from a full sync']
+  last_synced_at timestamptz
+
+  indexes {
+    location [note: 'USING gist (DBML only supports btree/hash types); see DATA-01 §3.6']
+    type
+    zone
+    planning_area
+  }
+}
+
+Table subject {
+  subject_id uuid [pk, default: `gen_random_uuid()`]
+  subject_name varchar(150) [not null]
+  level education_level [not null]
+  is_special_programme boolean [not null, default: false]
+
+  indexes {
+    (subject_name, level) [unique]
+  }
+  Note: 'Seeded: SAP, Autonomous School, Gifted Education Programme, Integrated Programme (special); Chinese, Malay, Tamil Language; each x 3 levels (ADR-004)'
+}
+
+Table cca {
+  cca_id uuid [pk, default: `gen_random_uuid()`]
+  cca_name varchar(150) [not null]
+  category cca_category [not null]
+
+  indexes {
+    (cca_name, category) [unique]
+  }
+}
+
+Table school_subject {
+  school_id uuid
+  subject_id uuid
+
+  indexes {
+    (school_id, subject_id) [pk]
+    subject_id [note: 'filter by subject (FR 5.1)']
+  }
+}
+
+Table school_cca {
+  school_id uuid
+  cca_id uuid
+  achievement_level text
+
+  indexes {
+    (school_id, cca_id) [pk]
+    cca_id
+  }
+}
+
+Table affiliation {
+  affiliation_id uuid [pk, default: `gen_random_uuid()`]
+  feeder_school_id uuid [not null]
+  receiving_school_id uuid [not null]
+  priority_description text
+
+  indexes {
+    (feeder_school_id, receiving_school_id) [unique]
+    receiving_school_id
+  }
+  Note: 'CHECK feeder_school_id <> receiving_school_id'
+}
+
+Table school_sync_log {
+  sync_id bigserial [pk]
+  dataset varchar(50) [not null]
+  started_at timestamptz [not null, default: `now()`]
+  finished_at timestamptz
+  status sync_status [not null]
+  records_updated integer [not null, default: 0]
+  error_message text [note: 'FR 12.5']
+}
+
+// Shortlist and application
+Table shortlist {
+  shortlist_id uuid [pk, default: `gen_random_uuid()`]
+  student_id uuid [not null]
+  name varchar(100) [not null, default: 'My shortlist']
+  date_created date [not null, default: `current_date`]
+  notes text
+
+  indexes {
+    student_id
+  }
+}
+
+Table shortlist_entry {
+  entry_id uuid [pk, default: `gen_random_uuid()`]
+  shortlist_id uuid [not null]
+  school_id uuid [not null]
+  date_added date [not null, default: `current_date`]
+  rank smallint [note: 'CHECK > 0']
+
+  indexes {
+    (shortlist_id, school_id) [unique]
+  }
+}
+
+Table application {
+  application_id uuid [pk, default: `gen_random_uuid()`]
+  student_id uuid [not null]
+  school_id uuid [not null]
+  status application_status [not null, default: 'Draft']
+  date_submitted date
+  deadline date [note: 'UC13; null = no reminder']
+  notes text [note: 'FR 9.3']
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (student_id, school_id) [unique, note: 'FR 10.5']
+    deadline [note: 'partial: WHERE deadline IS NOT NULL (FR 11.1)']
+  }
+  Note: 'CHECK status = Draft OR date_submitted IS NOT NULL'
+}
+
+Table deadline_reminder {
+  reminder_id uuid [pk, default: `gen_random_uuid()`]
+  application_id uuid [not null]
+  remind_for_deadline date [not null]
+  channel varchar(20) [not null, default: 'email']
+  sent_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (application_id, remind_for_deadline) [unique]
+  }
+}
+
+Table comparison_criterion {
+  criterion_id smallint [pk]
+  criterion_name varchar(50) [not null, unique]
+  Note: 'Seeded: 1 Distance, 2 Subject Match, 3 CCA Match, 4 Affiliation'
+}
+
+// Relationships, with delete rules from DATA-01 §3.5
+Ref: student_profile.user_id > user_account.user_id [delete: cascade]
+Ref: student_preferred_subject.student_id > student_profile.student_id [delete: cascade]
+Ref: student_preferred_subject.subject_id > subject.subject_id [delete: cascade]
+Ref: student_preferred_cca.student_id > student_profile.student_id [delete: cascade]
+Ref: student_preferred_cca.cca_id > cca.cca_id [delete: cascade]
+Ref: school_subject.school_id > school.school_id [delete: cascade]
+Ref: school_subject.subject_id > subject.subject_id [delete: cascade]
+Ref: school_cca.school_id > school.school_id [delete: cascade]
+Ref: school_cca.cca_id > cca.cca_id [delete: cascade]
+Ref: affiliation.feeder_school_id > school.school_id [delete: cascade]
+Ref: affiliation.receiving_school_id > school.school_id [delete: cascade]
+Ref: shortlist.student_id > student_profile.student_id [delete: cascade]
+Ref: shortlist_entry.shortlist_id > shortlist.shortlist_id [delete: cascade]
+Ref: shortlist_entry.school_id > school.school_id [delete: restrict]
+Ref: application.student_id > student_profile.student_id [delete: cascade]
+Ref: application.school_id > school.school_id [delete: restrict]
+Ref: deadline_reminder.application_id > application.application_id [delete: cascade]
